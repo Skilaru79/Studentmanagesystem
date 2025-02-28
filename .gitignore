@@ -1,0 +1,8 @@
+# Ignore Go binary files
+*.exe
+*.out
+*.test
+
+# Ignore other files
+.idea/
+.vscode/
