@@ -1,122 +1,137 @@
 package main
-package database
 
 import (
 	"context"
 	"fmt"
 	"log"
-	"os"
+	"net/http"
+	"time"
+
 	"github.com/gin-gonic/gin"
-		"go.mongodb.org/mongo-driver/bson"
-		"go.mongodb.org/mongo-driver/mongo"
-		"go.mongodb.org/mongo-driver/mongo/options"	
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-// Global variable to hold the MongoDB client
-var Client *mongo.Client
+// MongoDB connection variables
+var studentCollection *mongo.Collection
 
-// Function to connect to MongoDB
-func ConnectDatabase() {
-	// Set up MongoDB connection string (replace with your actual MongoDB URI)
-	uri := "mongodb://localhost:27017" // For local MongoDB
-	// If using MongoDB Atlas, replace with the URI provided by MongoDB Atlas
-	// uri := "mongodb+srv://<username>:<password>@cluster0.mongodb.net/test?retryWrites=true&w=majority"
+func initMongoDB() {
+	// MongoDB connection string
+	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
 
-	clientOptions := options.Client().ApplyURI(uri)
-
-	// Create the client and connect to MongoDB
-	var err error
-	Client, err = mongo.Connect(nil, clientOptions)
+	// Connect to MongoDB
+	client, err := mongo.Connect(context.TODO(), clientOptions)
 	if err != nil {
-		log.Fatalf("Error connecting to MongoDB: %v", err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 
-	// Ping the database to check the connection
-	err = Client.Ping(nil, readpref.Primary())
+	// Ping MongoDB
+	err = client.Ping(context.TODO(), nil)
 	if err != nil {
-		log.Fatalf("Error pinging MongoDB: %v", err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 
-	// Log success message if connected
-	fmt.Println("Successfully connected to MongoDB!")
+	// Set the database and collection
+	studentCollection = client.Database("studentdb").Collection("students")
+	fmt.Println("✅ Connected to MongoDB!")
 }
 
-
-
-)
-
-func main() {
-	ConnectDatabase()
-	r := gin.Default()
-
-	// Routes
-	r.POST("/students", addStudent)
-	r.PUT("/students/:id", editStudent)
-	r.GET("/students/:id", searchStudent)
-	r.DELETE("/students/:id", deleteStudent)
-	r.GET("/students", displayAllStudents)
-
-	// Start server
-	r.Run(":8080")
+// Student struct (model)
+type Student struct {
+	ID      string  `json:"id" bson:"id"`
+	Name    string  `json:"name" bson:"name"`
+	Email   string  `json:"email" bson:"email"`
+	English int     `json:"english" bson:"english"`
+	Maths   int     `json:"maths" bson:"maths"`
+	Science int     `json:"science" bson:"science"`
+	Total   int     `json:"total" bson:"total"`
+	Average float64 `json:"average" bson:"average"`
+	Grade   string  `json:"grade" bson:"grade"`
 }
 
-// Function to calculate total marks, average, and grade
-func calculateStudentDetails(student *Student) {
-	student.TotalMarks = 300
-	student.TotalSecured = student.English + student.Science + student.Maths
-	student.Average = float64(student.TotalSecured) / 3
+// Helper function to calculate total, average, and grade
+func calculateStudentDetails(s *Student) {
+	s.Total = s.English + s.Maths + s.Science
+	s.Average = float64(s.Total) / 3
 
-	if student.Average >= 90 {
-		student.Grade = "A"
-	} else if student.Average >= 80 {
-		student.Grade = "B"
-	} else if student.Average >= 70 {
-		student.Grade = "C"
-	} else if student.Average >= 60 {
-		student.Grade = "D"
+	// Assign grade based on average
+	if s.Average >= 90 {
+		s.Grade = "A"
+	} else if s.Average >= 75 {
+		s.Grade = "B"
+	} else if s.Average >= 60 {
+		s.Grade = "C"
 	} else {
-		student.Grade = "F"
+		s.Grade = "D"
 	}
 }
 
-// Add Student (POST /students)
-func addStudent(c *gin.Context) {
+// Create Student API
+func createStudent(c *gin.Context) {
 	var student Student
-	if err := c.ShouldBindJSON(&student); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if err := c.BindJSON(&student); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 		return
 	}
 
-	// Calculate student details
+	// Calculate total, average, and grade
 	calculateStudentDetails(&student)
 
-	// Insert into MongoDB
+	// Insert student into MongoDB
 	_, err := studentCollection.InsertOne(context.TODO(), student)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add student"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Student added successfully", "student": student})
+	c.JSON(http.StatusOK, gin.H{"message": "Student added successfully!", "student": student})
 }
 
-// Edit Student (PUT /students/:id)
-func editStudent(c *gin.Context) {
+// Get All Students API
+func getStudents(c *gin.Context) {
+	cursor, err := studentCollection.Find(context.TODO(), bson.M{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve students"})
+		return
+	}
+
+	var students []Student
+	if err = cursor.All(context.TODO(), &students); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse data"})
+		return
+	}
+
+	c.JSON(http.StatusOK, students)
+}
+
+// Get Single Student by ID
+func getStudentByID(c *gin.Context) {
+	studentID := c.Param("id")
+
+	var student Student
+	err := studentCollection.FindOne(context.TODO(), bson.M{"id": studentID}).Decode(&student)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Student not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, student)
+}
+
+// Update Student API
+func updateStudent(c *gin.Context) {
 	studentID := c.Param("id")
 	var updatedStudent Student
 
-	if err := c.ShouldBindJSON(&updatedStudent); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if err := c.BindJSON(&updatedStudent); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 		return
 	}
 
 	calculateStudentDetails(&updatedStudent)
 
+	// Update student in MongoDB
 	filter := bson.M{"id": studentID}
 	update := bson.M{"$set": updatedStudent}
 
@@ -126,57 +141,37 @@ func editStudent(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Student updated successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Student updated successfully!"})
 }
 
-// Search Student (GET /students/:id)
-func searchStudent(c *gin.Context) {
-	studentID := c.Param("id")
-	var student Student
-
-	filter := bson.M{"id": studentID}
-	err := studentCollection.FindOne(context.TODO(), filter).Decode(&student)
-	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Student not found"})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
-		}
-		return
-	}
-
-	c.JSON(http.StatusOK, student)
-}
-
-// Delete Student (DELETE /students/:id)
+// Delete Student API
 func deleteStudent(c *gin.Context) {
 	studentID := c.Param("id")
-	filter := bson.M{"id": studentID}
 
-	_, err := studentCollection.DeleteOne(context.TODO(), filter)
+	_, err := studentCollection.DeleteOne(context.TODO(), bson.M{"id": studentID})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete student"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Student deleted successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Student deleted successfully!"})
 }
 
-// Display All Students (GET /students)
-func displayAllStudents(c *gin.Context) {
-	var students []Student
-	cursor, err := studentCollection.Find(context.TODO(), bson.M{})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve students"})
-		return
-	}
-	defer cursor.Close(context.TODO())
+func main() {
+	// Initialize MongoDB connection
+	initMongoDB()
 
-	for cursor.Next(context.TODO()) {
-		var student Student
-		cursor.Decode(&student)
-		students = append(students, student)
-	}
+	// Set up Gin router
+	router := gin.Default()
 
-	c.JSON(http.StatusOK, students)
+	// Define API endpoints
+	router.POST("/students", createStudent)
+	router.GET("/students", getStudents)
+	router.GET("/students/:id", getStudentByID)
+	router.PUT("/students/:id", updateStudent)
+	router.DELETE("/students/:id", deleteStudent)
+
+	// Start the server
+	fmt.Println("🚀 Server running on http://localhost:8080")
+	router.Run(":8080")
 }
