@@ -1,30 +1,76 @@
 package main
+package database
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
+	"github.com/gin-gonic/gin"
+		"go.mongodb.org/mongo-driver/bson"
+		"go.mongodb.org/mongo-driver/mongo"
+		"go.mongodb.org/mongo-driver/mongo/options"	
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-type Student struct {
-	Name        string
-	ID          string
-	English     int
-	Science     int
-	Maths       int
-	TotalMarks  int
-	TotalSecured int
-	Average     float64
-	Grade       string
+// Global variable to hold the MongoDB client
+var Client *mongo.Client
+
+// Function to connect to MongoDB
+func ConnectDatabase() {
+	// Set up MongoDB connection string (replace with your actual MongoDB URI)
+	uri := "mongodb://localhost:27017" // For local MongoDB
+	// If using MongoDB Atlas, replace with the URI provided by MongoDB Atlas
+	// uri := "mongodb+srv://<username>:<password>@cluster0.mongodb.net/test?retryWrites=true&w=majority"
+
+	clientOptions := options.Client().ApplyURI(uri)
+
+	// Create the client and connect to MongoDB
+	var err error
+	Client, err = mongo.Connect(nil, clientOptions)
+	if err != nil {
+		log.Fatalf("Error connecting to MongoDB: %v", err)
+		os.Exit(1)
+	}
+
+	// Ping the database to check the connection
+	err = Client.Ping(nil, readpref.Primary())
+	if err != nil {
+		log.Fatalf("Error pinging MongoDB: %v", err)
+		os.Exit(1)
+	}
+
+	// Log success message if connected
+	fmt.Println("Successfully connected to MongoDB!")
 }
 
-var students []Student
 
-// Function to calculate total marks, average and grade
+
+)
+
+func main() {
+	ConnectDatabase()
+	r := gin.Default()
+
+	// Routes
+	r.POST("/students", addStudent)
+	r.PUT("/students/:id", editStudent)
+	r.GET("/students/:id", searchStudent)
+	r.DELETE("/students/:id", deleteStudent)
+	r.GET("/students", displayAllStudents)
+
+	// Start server
+	r.Run(":8080")
+}
+
+// Function to calculate total marks, average, and grade
 func calculateStudentDetails(student *Student) {
 	student.TotalMarks = 300
 	student.TotalSecured = student.English + student.Science + student.Maths
 	student.Average = float64(student.TotalSecured) / 3
-	// Calculate grade
+
 	if student.Average >= 90 {
 		student.Grade = "A"
 	} else if student.Average >= 80 {
@@ -38,133 +84,99 @@ func calculateStudentDetails(student *Student) {
 	}
 }
 
-// Function to display all students
-func displayAllStudents() {
-	if len(students) == 0 {
-		fmt.Println("No students available.")
+// Add Student (POST /students)
+func addStudent(c *gin.Context) {
+	var student Student
+	if err := c.ShouldBindJSON(&student); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	for _, student := range students {
-		fmt.Printf("ID: %s, Name: %s, English: %d, Science: %d, Maths: %d, Total Secured: %d, Average: %.2f, Grade: %s\n",
-			student.ID, student.Name, student.English, student.Science, student.Maths, student.TotalSecured, student.Average, student.Grade)
-	}
-}
 
-// Function to add student
-func addStudent() {
-	var student Student
-	fmt.Println("Enter student details:")
-	fmt.Print("Name: ")
-	fmt.Scan(&student.Name)
-	fmt.Print("ID: ")
-	fmt.Scan(&student.ID)
-	fmt.Print("English Marks: ")
-	fmt.Scan(&student.English)
-	fmt.Print("Science Marks: ")
-	fmt.Scan(&student.Science)
-	fmt.Print("Maths Marks: ")
-	fmt.Scan(&student.Maths)
-
-	// Calculate total marks, average, and grade
+	// Calculate student details
 	calculateStudentDetails(&student)
 
-	// Add to the list of students
-	students = append(students, student)
-	fmt.Println("Student added successfully!")
+	// Insert into MongoDB
+	_, err := studentCollection.InsertOne(context.TODO(), student)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add student"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Student added successfully", "student": student})
 }
 
-// Function to edit student details
-func editStudent() {
-	var studentID string
-	fmt.Print("Enter student ID to edit: ")
-	fmt.Scan(&studentID)
+// Edit Student (PUT /students/:id)
+func editStudent(c *gin.Context) {
+	studentID := c.Param("id")
+	var updatedStudent Student
 
-	// Search for the student
-	for i, student := range students {
-		if student.ID == studentID {
-			fmt.Println("Editing student:", student.Name)
-			fmt.Print("New Name: ")
-			fmt.Scan(&students[i].Name)
-			fmt.Print("New English Marks: ")
-			fmt.Scan(&students[i].English)
-			fmt.Print("New Science Marks: ")
-			fmt.Scan(&students[i].Science)
-			fmt.Print("New Maths Marks: ")
-			fmt.Scan(&students[i].Maths)
-
-			// Recalculate the details after editing
-			calculateStudentDetails(&students[i])
-			fmt.Println("Student details updated successfully!")
-			return
-		}
+	if err := c.ShouldBindJSON(&updatedStudent); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
-	fmt.Println("Student not found!")
+
+	calculateStudentDetails(&updatedStudent)
+
+	filter := bson.M{"id": studentID}
+	update := bson.M{"$set": updatedStudent}
+
+	_, err := studentCollection.UpdateOne(context.TODO(), filter, update)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update student"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Student updated successfully"})
 }
 
-// Function to search student by ID
-func searchStudent() {
-	var studentID string
-	fmt.Print("Enter student ID to search: ")
-	fmt.Scan(&studentID)
+// Search Student (GET /students/:id)
+func searchStudent(c *gin.Context) {
+	studentID := c.Param("id")
+	var student Student
 
-	// Search for the student
-	for _, student := range students {
-		if student.ID == studentID {
-			fmt.Printf("Student Found: ID: %s, Name: %s, English: %d, Science: %d, Maths: %d, Total Secured: %d, Average: %.2f, Grade: %s\n",
-				student.ID, student.Name, student.English, student.Science, student.Maths, student.TotalSecured, student.Average, student.Grade)
-			return
+	filter := bson.M{"id": studentID}
+	err := studentCollection.FindOne(context.TODO(), filter).Decode(&student)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Student not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		}
+		return
 	}
-	fmt.Println("Student not found!")
+
+	c.JSON(http.StatusOK, student)
 }
 
-// Function to delete student
-func deleteStudent() {
-	var studentID string
-	fmt.Print("Enter student ID to delete: ")
-	fmt.Scan(&studentID)
+// Delete Student (DELETE /students/:id)
+func deleteStudent(c *gin.Context) {
+	studentID := c.Param("id")
+	filter := bson.M{"id": studentID}
 
-	// Search and remove the student
-	for i, student := range students {
-		if student.ID == studentID {
-			students = append(students[:i], students[i+1:]...)
-			fmt.Println("Student deleted successfully!")
-			return
-		}
+	_, err := studentCollection.DeleteOne(context.TODO(), filter)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete student"})
+		return
 	}
-	fmt.Println("Student not found!")
+
+	c.JSON(http.StatusOK, gin.H{"message": "Student deleted successfully"})
 }
 
-func main() {
-	for {
-		fmt.Println("\nStudent Management System")
-		fmt.Println("1. Add Student")
-		fmt.Println("2. Edit Student Details")
-		fmt.Println("3. Search Student")
-		fmt.Println("4. Delete Student")
-		fmt.Println("5. Display All Students")
-		fmt.Println("6. Exit")
-		fmt.Print("Enter your choice: ")
-
-		var choice int
-		fmt.Scan(&choice)
-
-		switch choice {
-		case 1:
-			addStudent()
-		case 2:
-			editStudent()
-		case 3:
-			searchStudent()
-		case 4:
-			deleteStudent()
-		case 5:
-			displayAllStudents()
-		case 6:
-			fmt.Println("Exiting...")
-			os.Exit(0)
-		default:
-			fmt.Println("Invalid choice. Please try again.")
-		}
+// Display All Students (GET /students)
+func displayAllStudents(c *gin.Context) {
+	var students []Student
+	cursor, err := studentCollection.Find(context.TODO(), bson.M{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve students"})
+		return
 	}
+	defer cursor.Close(context.TODO())
+
+	for cursor.Next(context.TODO()) {
+		var student Student
+		cursor.Decode(&student)
+		students = append(students, student)
+	}
+
+	c.JSON(http.StatusOK, students)
 }
